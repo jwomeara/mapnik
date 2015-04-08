@@ -119,8 +119,8 @@ PLUGINS = { # plugins with external dependencies
             'occi':    {'default':False,'path':'OCCI','inc':'occi.h','lib':'clntsh','lang':'C++'},
             'sqlite':  {'default':True,'path':'SQLITE','inc':'sqlite3.h','lib':'sqlite3','lang':'C'},
             'rasterlite':  {'default':False,'path':'RASTERLITE','inc':['sqlite3.h','rasterlite.h'],'lib':'rasterlite','lang':'C'},
-            'java':    {'default':True,'path':'JAVA','inc':['jni.h','jawt.h','jawt_md.h','jni_md.h'],'lib':['jawt','jvm'],'lang':'C++'},
-            'geowave': {'default':True,'path':'GEOWAVE','inc':None,'lib':'jace','lang':'C++'},
+            'java':    {'default':False,'path':'JAVA','inc':['jni.h','jawt.h','jawt_md.h','jni_md.h'],'lib':['jawt','jvm'],'lang':'C++'},
+            'geowave': {'default':False,'path':'GEOWAVE','inc':None,'lib':'jace','lang':'C++'},
 
             # todo: osm plugin does also depend on libxml2 (but there is a separate check for that)
             'osm':     {'default':False,'path':None,'inc':None,'lib':None,'lang':'C'},
@@ -2072,6 +2072,9 @@ if not HELP_REQUESTED:
                         env['LIBS'].remove(details['lib'])
                 else:
                     env['LIBS'].remove(details['lib'])
+            elif isinstance(details['lib'], list) and (set(details['lib']) < set(env['LIBS'])):
+                for lib in details['lib']:
+                    env['LIBS'].remove(lib)
             elif not details['lib']:
                 if env['PLUGIN_LINKING'] == 'shared':
                     # build internal datasource input plugins

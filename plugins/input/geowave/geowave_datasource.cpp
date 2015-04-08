@@ -5,8 +5,6 @@
 // mapnik
 #include <mapnik/debug.hpp>
 
-// boost
-
 // jace
 #include <jace/Jace.h>
 using jace::java_cast;
@@ -56,6 +54,11 @@ using jace::proxy::com::vividsolutions::jts::geom::Coordinate;
 #include "jace/proxy/com/vividsolutions/jts/geom/GeometryFactory.h"
 using jace::proxy::com::vividsolutions::jts::geom::GeometryFactory;
 
+#include "jace/proxy/org/apache/accumulo/core/client/AccumuloException.h"
+using jace::proxy::org::apache::accumulo::core::client::AccumuloException;
+#include "jace/proxy/org/apache/accumulo/core/client/AccumuloSecurityException.h"
+using jace::proxy::org::apache::accumulo::core::client::AccumuloSecurityException;
+
 #include "jace/proxy/org/opengis/feature/simple/SimpleFeatureType.h"
 using jace::proxy::org::opengis::feature::simple::SimpleFeatureType;
 #include "jace/proxy/org/opengis/feature/type/GeometryDescriptor.h"
@@ -104,15 +107,15 @@ using mapnik::parameters;
 DATASOURCE_PLUGIN(geowave_datasource)
 
 geowave_datasource::geowave_datasource(parameters const& params)
-  : datasource(params),
-    desc_(geowave_datasource::name(), *params.get<std::string>("encoding","utf-8")),
-    extent_(),
-    zookeeper_url_(*params.get<std::string>("zookeeper_url", "")),
-    instance_name_(*params.get<std::string>("instance_name", "")),
-    username_(*params.get<std::string>("username", "")),
-    password_(*params.get<std::string>("password", "")),
-    table_namespace_(*params.get<std::string>("table_namespace", "")),
-    adapter_id_(*params.get<std::string>("adapter_id", ""))
+    :  datasource(params),
+       desc_(geowave_datasource::name(), *params.get<std::string>("encoding","utf-8")),
+       extent_(),
+       zookeeper_url_(*params.get<std::string>("zookeeper_url", "")),
+       instance_name_(*params.get<std::string>("instance_name", "")),
+       username_(*params.get<std::string>("username", "")),
+       password_(*params.get<std::string>("password", "")),
+       table_namespace_(*params.get<std::string>("table_namespace", "")),
+       adapter_id_(*params.get<std::string>("adapter_id", ""))
 {
     this->init(params);
 }
@@ -129,53 +132,59 @@ void geowave_datasource::init(mapnik::parameters const& params)
     }
 
     // Initialize GeoWave interface
-    accumulo_operations_ = java_new<BasicAccumuloOperations>(
+    try 
+    {
+        accumulo_operations_ = java_new<BasicAccumuloOperations>(
             java_new<String>(zookeeper_url_),
             java_new<String>(instance_name_),
             java_new<String>(username_),
             java_new<String>(password_),
             java_new<String>(table_namespace_));
-
+    }
+    catch (AccumuloException& e)
+    {
+        MAPNIK_LOG_DEBUG(geowave) << "There was a problem establishing a connector. " << e;
+        return;
+    }
+    catch (AccumuloSecurityException& e)
+    {
+        MAPNIK_LOG_DEBUG(geowave) << "The credentials passed are invalid. " << e;
+        return;
+    }
+        
     // pull bounds from statistics
     AccumuloDataStatisticsStore accumulo_statstore = java_new<AccumuloDataStatisticsStore>(
-            accumulo_operations_);
+        accumulo_operations_);
 
     AccumuloAdapterStore accumulo_adapter_store = java_new<AccumuloAdapterStore>(
-            accumulo_operations_);
+        accumulo_operations_);
 
-    CloseableIterator itr = accumulo_adapter_store.getAdapters();
-    while(itr.hasNext()){
-       StatisticalDataAdapter adapter = java_cast<StatisticalDataAdapter>(itr.next());
-       MAPNIK_LOG_DEBUG(geowave) << "Adapter Id: " << adapter.getAdapterId().getString();
-
-       JArray<ByteArrayId> statsIds = adapter.getSupportedStatisticsIds();
-       for (int i = 0; i < statsIds.length(); i++){
-           MAPNIK_LOG_DEBUG(geowave) << "  Stats Id: " << statsIds[i].getString();
-       }
+    DataAdapter data_adapter = accumulo_adapter_store.getAdapter(java_new<ByteArrayId>(adapter_id_));
+    
+    if (!instanceof<FeatureDataAdapter>(data_adapter))
+    {
+        MAPNIK_LOG_DEBUG(geowave) << "Adapter type not supported for adapter_id: [" << adapter_id_ << "]";
+        return;
     }
-    itr.close();
-
-    FeatureDataAdapter data_adapter = java_cast<FeatureDataAdapter>(accumulo_adapter_store.getAdapter(java_new<ByteArrayId>(adapter_id_)));
+    
+    FeatureDataAdapter feature_data_adapter = java_cast<FeatureDataAdapter>(data_adapter);
 
     FeatureBoundingBoxStatistics bbox_stats = java_cast<FeatureBoundingBoxStatistics>(accumulo_statstore.getDataStatistics(
-            java_new<ByteArrayId>(adapter_id_), 
-            FeatureBoundingBoxStatistics::composeId(data_adapter.getType().getGeometryDescriptor().getLocalName()),
-            JArray<String>(0)));
+        java_new<ByteArrayId>(adapter_id_), 
+        FeatureBoundingBoxStatistics::composeId(feature_data_adapter.getType().getGeometryDescriptor().getLocalName()),
+        JArray<String>(0)));
     
     if (!bbox_stats.isNull()){
-        // minLon, minLat, maxLon, maxLat
         extent_.init(
-                bbox_stats.getMinX(), 
-                bbox_stats.getMinY(), 
-                bbox_stats.getMaxX(), 
-                bbox_stats.getMaxY());
+            bbox_stats.getMinX(), 
+            bbox_stats.getMinY(), 
+            bbox_stats.getMaxX(), 
+            bbox_stats.getMaxY());
     }
 }
 
 int geowave_datasource::createJvm()
 {
-    MAPNIK_LOG_DEBUG(geowave) << "createJvm()";
-
     try
     {
         StaticVmLoader loader(JNI_VERSION_1_2);
@@ -216,37 +225,31 @@ geowave_datasource::~geowave_datasource() { }
 
 const char * geowave_datasource::name()
 {
-    MAPNIK_LOG_DEBUG(geowave) << "name()";
     return "geowave";
 }
 
 mapnik::datasource::datasource_t geowave_datasource::type() const
 {
-    MAPNIK_LOG_DEBUG(geowave) << "type()";
     return datasource::Vector;
 }
 
 mapnik::box2d<double> geowave_datasource::envelope() const
 {
-    MAPNIK_LOG_DEBUG(geowave) << "envelope()";
     return extent_;
 }
 
 boost::optional<mapnik::datasource::geometry_t> geowave_datasource::get_geometry_type() const
 {
-    MAPNIK_LOG_DEBUG(geowave) << "get_geometry_type()";
     return mapnik::datasource::Collection;
 }
 
 mapnik::layer_descriptor geowave_datasource::get_descriptor() const
 {
-    MAPNIK_LOG_DEBUG(geowave) << "get_descriptor()";
     return desc_;
 }
 
 mapnik::featureset_ptr geowave_datasource::features(mapnik::query const& q) const
 {
-    MAPNIK_LOG_DEBUG(geowave) << "features()";
     // if the query box intersects our world extent then query for features
     mapnik::box2d<double> const& box = q.get_bbox();
     if (extent_.intersects(box))
@@ -277,7 +280,6 @@ mapnik::featureset_ptr geowave_datasource::features(mapnik::query const& q) cons
 
 mapnik::featureset_ptr geowave_datasource::features_at_point(mapnik::coord2d const& pt, double tol) const
 {
-    MAPNIK_LOG_DEBUG(geowave) << "features_at_point()";
     // if the query box intersects our world extent then query for features
     mapnik::box2d<double> box(pt, pt);
     box.pad(tol);
